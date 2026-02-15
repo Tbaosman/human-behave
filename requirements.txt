@@ -1,0 +1,25 @@
+# Data processing
+pandas
+pyarrow
+numpy
+
+# MEPS data loading
+pyreadstat
+
+# LLM interaction
+ollama
+httpx
+# Progress bars
+tqdm
+
+# Evaluation & statistics
+scikit-learn
+scipy
+
+# Visualization (optional)
+matplotlib
+seaborn
+
+# Jupyter (optional)
+jupyter
+ipykernel
