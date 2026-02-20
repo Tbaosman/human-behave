@@ -68,7 +68,9 @@ class PatientProfile:
     poverty_category: str
     poverty_level_pct: float
     family_income: float
+    personal_income: float 
     employment_status: str
+    
     
     # Insurance
     insurance_status: str
@@ -110,7 +112,8 @@ class PatientProfile:
         parts.append(".")
         
         # Economic
-        parts.append(f"\n\nMy household income is ${self.family_income:,.0f} per year")
+        parts.append(f"\n\nMy personal income is ${self.personal_income:,.0f} per year")
+        parts.append(f" and my household income is ${self.family_income:,.0f} per year")
         parts.append(f", putting me in the {self.poverty_category} category")
         parts.append(f" ({self.poverty_level_pct:.0f}% of the federal poverty level).")
         
@@ -208,6 +211,7 @@ def create_patient_profile(row: pd.Series) -> PatientProfile:
         poverty_category=safe_map(row.get("poverty_category"), POVERTY_MAP),
         poverty_level_pct=safe_float(row.get("poverty_level_pct")),
         family_income=safe_float(row.get("family_income")),
+        personal_income=safe_float(row.get("personal_income")), 
         employment_status=safe_map(row.get("employment_status"), EMPLOYMENT_MAP),
         insurance_status=safe_map(row.get("insurance_coverage"), INSURANCE_MAP),
         health_status=safe_map(row.get("health_status"), HEALTH_MAP),
