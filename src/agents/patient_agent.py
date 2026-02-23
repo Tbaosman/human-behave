@@ -18,7 +18,7 @@ from configs.config import DEFAULT_MODEL, DEFAULT_TEMPERATURE
 
 class PatientAgent(BaseAgent):
     """
-    Agent that predicts healthcare delay/forgo decisions.
+    Agent that simulate (predict) healthcare delay/forgo decisions.
     
     Uses MEPS-style retrospective questions with minimal prompting.
     """

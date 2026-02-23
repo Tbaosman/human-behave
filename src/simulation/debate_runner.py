@@ -1,5 +1,5 @@
 """
-Simulation runner: Run predictions across multiple patients.
+Debate simulation runner: Run multi-round debate predictions across multiple patients.
 """
 
 import pandas as pd
@@ -14,21 +14,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from configs.config import PROCESSED_DATA_DIR, OUTPUTS_DIR, DEFAULT_MODEL, DEFAULT_TEMPERATURE
 from src.profiles.patient_profile import create_patient_profile, extract_ground_truth
-from src.agents.patient_agent import PatientAgent
+from src.agents.debate_agent import DebateAgent
 from src.agents.base_agent import test_ollama_connection
 
 
 def get_balanced_sample(df: pd.DataFrame, n_per_group: int = 10, random_seed: int = 42) -> pd.DataFrame:
     """
     Get balanced sample: n with barriers, n without.
-    
-    Args:
-        df: Full dataset
-        n_per_group: Number per group
-        random_seed: For reproducibility
-    
-    Returns:
-        Balanced DataFrame
     """
     with_barrier = df[df["any_barrier"] == 1].sample(
         n=min(n_per_group, len(df[df["any_barrier"] == 1])),
@@ -41,7 +33,7 @@ def get_balanced_sample(df: pd.DataFrame, n_per_group: int = 10, random_seed: in
     )
     
     balanced = pd.concat([with_barrier, without_barrier]).sample(
-        frac=1, random_state=random_seed  # Shuffle
+        frac=1, random_state=random_seed
     )
     
     print(f"Balanced sample: {len(with_barrier)} with barrier, {len(without_barrier)} without")
@@ -49,25 +41,29 @@ def get_balanced_sample(df: pd.DataFrame, n_per_group: int = 10, random_seed: in
     return balanced
 
 
-def run_simulation(
-    n_patients: int = 100,
+def run_debate_simulation(
+    n_patients: int = 20,
     model_name: str = DEFAULT_MODEL,
-    temperature: float = DEFAULT_TEMPERATURE,
+    temp_a: float = 0.5,
+    temp_b: float = 0.9,
+    temp_aggregator: float = 0.3,
     random_seed: int = 42,
     output_name: Optional[str] = None,
     balanced: bool = False,
     shared_sample_path: Optional[str] = None,
 ) -> pd.DataFrame:
     """
-    Run simulation on n patients.
+    Run debate simulation on n patients.
     
     Args:
         n_patients: Number of patients to simulate
         model_name: Ollama model to use
-        temperature: Model temperature
+        temp_a: Temperature for Agent A (conservative)
+        temp_b: Temperature for Agent B (diverse)
+        temp_aggregator: Temperature for aggregator (unused with majority vote)
         random_seed: For reproducible sampling
         output_name: Output filename (auto-generated if None)
-        balanced: If True, use balanced sampling (equal barriers/no barriers)
+        balanced: If True, use balanced sampling
     
     Returns:
         DataFrame with results
@@ -91,20 +87,26 @@ def run_simulation(
     else:
         sample_df = df.sample(n=n_patients, random_state=random_seed)
     
-    print(f"Running simulation: {len(sample_df)} patients, model={model_name}")
+    print(f"Running debate simulation: {len(sample_df)} patients, model={model_name}")
+    print(f"Temperatures: A={temp_a}, B={temp_b}, Aggregator={temp_aggregator}")
     
-    # Initialize agent
-    agent = PatientAgent(model_name=model_name, temperature=temperature)
+    # Initialize debate agent
+    debate = DebateAgent(
+        model_name=model_name,
+        temp_a=temp_a,
+        temp_b=temp_b,
+        temp_aggregator=temp_aggregator,
+    )
     
     # Run predictions
     results = []
     
-    for idx, row in tqdm(sample_df.iterrows(), total=len(sample_df), desc="Simulating"):
+    for idx, row in tqdm(sample_df.iterrows(), total=len(sample_df), desc="Debating"):
         profile = create_patient_profile(row)
         truth = extract_ground_truth(row)
         
         try:
-            response = agent.predict(profile)
+            result = debate.predict(profile)
             
             results.append({
                 # Identifiers
@@ -119,11 +121,45 @@ def run_simulation(
                 "health_status": profile.health_status,
                 "chronic_count": profile.chronic_count,
                 
-                # Predictions
-                "pred_delay": response.delay,
-                "pred_forgo": response.forgo,
-                "pred_any_barrier": 1 if (response.delay == 1 or response.forgo == 1) else 0,
-                "reasoning": response.reasoning,
+                # Round 1 - Agent A
+                "r1_a_delay": result.r1_agent_a.delay,
+                "r1_a_forgo": result.r1_agent_a.forgo,
+                "r1_a_reasoning": result.r1_agent_a.reasoning,
+                
+                # Round 1 - Agent B
+                "r1_b_delay": result.r1_agent_b.delay,
+                "r1_b_forgo": result.r1_agent_b.forgo,
+                "r1_b_reasoning": result.r1_agent_b.reasoning,
+                
+                # Round 1 agreement
+                "r1_delay_agreed": result.agreement_at_round(1)["delay"],
+                "r1_forgo_agreed": result.agreement_at_round(1)["forgo"],
+                "r1_full_agreed": result.agreement_at_round(1)["full"],
+                
+                # Round 2 - Agent A
+                "r2_a_delay": result.r2_agent_a.delay,
+                "r2_a_forgo": result.r2_agent_a.forgo,
+                "r2_a_reasoning": result.r2_agent_a.reasoning,
+                "a_changed_mind": result.a_changed_mind,
+                
+                # Round 2 - Agent B
+                "r2_b_delay": result.r2_agent_b.delay,
+                "r2_b_forgo": result.r2_agent_b.forgo,
+                "r2_b_reasoning": result.r2_agent_b.reasoning,
+                "b_changed_mind": result.b_changed_mind,
+                
+                # Round 2 agreement
+                "r2_delay_agreed": result.agreement_at_round(2)["delay"],
+                "r2_forgo_agreed": result.agreement_at_round(2)["forgo"],
+                "r2_full_agreed": result.agreement_at_round(2)["full"],
+                
+                # Final decision
+                "pred_delay": result.final_delay,
+                "pred_forgo": result.final_forgo,
+                "pred_any_barrier": 1 if (result.final_delay == 1 or result.final_forgo == 1) else 0,
+                "final_method": result.final_method,
+                "final_reasoning": result.final_reasoning,
+                "rounds_needed": result.rounds_needed,
                 
                 # Ground truth
                 "true_delay": truth.delayed_care,
@@ -131,10 +167,10 @@ def run_simulation(
                 "true_any_barrier": truth.any_barrier,
                 
                 # Accuracy
-                "delay_correct": int(response.delay == truth.delayed_care),
-                "forgo_correct": int(response.forgo == truth.forgone_care),
+                "delay_correct": int(result.final_delay == truth.delayed_care),
+                "forgo_correct": int(result.final_forgo == truth.forgone_care),
                 "any_barrier_correct": int(
-                    (1 if (response.delay == 1 or response.forgo == 1) else 0) == truth.any_barrier
+                    (1 if (result.final_delay == 1 or result.final_forgo == 1) else 0) == truth.any_barrier
                 ),
                 
                 # Metadata
@@ -158,7 +194,7 @@ def run_simulation(
     if output_name is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         balance_tag = "_balanced" if balanced else ""
-        output_name = f"sim_{model_name.replace(':', '_')}_{len(sample_df)}{balance_tag}_{timestamp}"
+        output_name = f"debate_{model_name.replace(':', '_')}_{len(sample_df)}{balance_tag}_{timestamp}"
     
     csv_path = OUTPUTS_DIR / f"{output_name}.csv"
     results_df.to_csv(csv_path, index=False)
@@ -168,7 +204,9 @@ def run_simulation(
     config = {
         "n_patients": len(sample_df),
         "model_name": model_name,
-        "temperature": temperature,
+        "temp_a": temp_a,
+        "temp_b": temp_b,
+        "temp_aggregator": temp_aggregator,
         "random_seed": random_seed,
         "balanced": balanced,
         "timestamp": datetime.now().isoformat(),
@@ -178,16 +216,16 @@ def run_simulation(
         json.dump(config, f, indent=2)
     
     # Print summary
-    print_summary(results_df)
+    print_debate_summary(results_df)
     
     return results_df
 
 
-def print_summary(df: pd.DataFrame):
-    """Print simulation summary."""
+def print_debate_summary(df: pd.DataFrame):
+    """Print debate simulation summary."""
     
     print(f"\n{'=' * 70}")
-    print("SIMULATION SUMMARY")
+    print("DEBATE SIMULATION SUMMARY")
     print("=" * 70)
     
     valid = df[df["error"].isna()]
@@ -206,7 +244,7 @@ def print_summary(df: pd.DataFrame):
     print(f"Any barrier: {valid['true_any_barrier'].mean() * 100:.1f}%")
     
     # Predicted rates
-    print(f"\n--- Predicted Rates ---")
+    print(f"\n--- Predicted Rates (Final) ---")
     print(f"Delay rate: {valid['pred_delay'].mean() * 100:.1f}%")
     print(f"Forgo rate: {valid['pred_forgo'].mean() * 100:.1f}%")
     print(f"Any barrier: {valid['pred_any_barrier'].mean() * 100:.1f}%")
@@ -217,21 +255,18 @@ def print_summary(df: pd.DataFrame):
     print(f"Forgo accuracy: {valid['forgo_correct'].mean() * 100:.1f}%")
     print(f"Any barrier accuracy: {valid['any_barrier_correct'].mean() * 100:.1f}%")
     
-    # Confusion matrix style breakdown
-    print(f"\n--- Prediction Breakdown ---")
-    
-    # True positives, false positives, etc. for any_barrier
+    # Confusion matrix
+    print(f"\n--- Prediction Breakdown (Any Barrier) ---")
     tp = len(valid[(valid['pred_any_barrier'] == 1) & (valid['true_any_barrier'] == 1)])
     fp = len(valid[(valid['pred_any_barrier'] == 1) & (valid['true_any_barrier'] == 0)])
     tn = len(valid[(valid['pred_any_barrier'] == 0) & (valid['true_any_barrier'] == 0)])
     fn = len(valid[(valid['pred_any_barrier'] == 0) & (valid['true_any_barrier'] == 1)])
     
-    print(f"True Positives (predicted barrier, had barrier): {tp}")
-    print(f"False Positives (predicted barrier, no barrier): {fp}")
-    print(f"True Negatives (predicted no barrier, no barrier): {tn}")
-    print(f"False Negatives (predicted no barrier, had barrier): {fn}")
+    print(f"True Positives:  {tp}")
+    print(f"False Positives: {fp}")
+    print(f"True Negatives:  {tn}")
+    print(f"False Negatives: {fn}")
     
-    # Precision, Recall, F1
     precision = tp / (tp + fp) if (tp + fp) > 0 else 0
     recall = tp / (tp + fn) if (tp + fn) > 0 else 0
     f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
@@ -239,15 +274,58 @@ def print_summary(df: pd.DataFrame):
     print(f"\nPrecision: {precision:.3f}")
     print(f"Recall: {recall:.3f}")
     print(f"F1 Score: {f1:.3f}")
+    
+    # Debate dynamics
+    print(f"\n--- Debate Dynamics ---")
+    
+    # Resolution method
+    methods = valid["final_method"].value_counts()
+    print(f"\nResolution method:")
+    for method, count in methods.items():
+        pct = count / len(valid) * 100
+        print(f"  {method}: {count} ({pct:.1f}%)")
+    
+    # Rounds needed
+    rounds = valid["rounds_needed"].value_counts().sort_index()
+    print(f"\nRounds needed:")
+    for r, count in rounds.items():
+        pct = count / len(valid) * 100
+        print(f"  Round {r}: {count} ({pct:.1f}%)")
+    
+    # Round 1 agreement
+    r1_agreed = valid["r1_full_agreed"].mean() * 100
+    print(f"\nRound 1 full agreement: {r1_agreed:.1f}%")
+    
+    # Round 2 agreement (only for those that went to R2)
+    went_to_r2 = valid[valid["rounds_needed"] >= 2]
+    if len(went_to_r2) > 0:
+        r2_agreed = went_to_r2["r2_full_agreed"].mean() * 100
+        print(f"Round 2 full agreement (of those that disagreed in R1): {r2_agreed:.1f}%")
+    
+    # Mind changes
+    if len(went_to_r2) > 0:
+        a_changed = went_to_r2["a_changed_mind"].mean() * 100
+        b_changed = went_to_r2["b_changed_mind"].mean() * 100
+        print(f"\nAgent A changed mind in R2: {a_changed:.1f}%")
+        print(f"Agent B changed mind in R2: {b_changed:.1f}%")
+    
+    # Accuracy by resolution method
+    print(f"\n--- Accuracy by Resolution Method ---")
+    for method in methods.index:
+        subset = valid[valid["final_method"] == method]
+        if len(subset) > 0:
+            acc = subset["any_barrier_correct"].mean() * 100
+            print(f"  {method}: {acc:.1f}% ({len(subset)} cases)")
 
 
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description="Run healthcare decision simulation")
-    parser.add_argument("-n", "--n_patients", type=int, default=10, help="Number of patients")
+    parser = argparse.ArgumentParser(description="Run debate healthcare simulation")
+    parser.add_argument("-n", "--n_patients", type=int, default=20, help="Number of patients")
     parser.add_argument("-m", "--model", type=str, default=DEFAULT_MODEL, help="Model name")
-    parser.add_argument("-t", "--temperature", type=float, default=DEFAULT_TEMPERATURE, help="Temperature")
+    parser.add_argument("-ta", "--temp_a", type=float, default=0.5, help="Agent A temperature")
+    parser.add_argument("-tb", "--temp_b", type=float, default=0.9, help="Agent B temperature")
     parser.add_argument("-s", "--seed", type=int, default=42, help="Random seed")
     parser.add_argument("-b", "--balanced", action="store_true", help="Use balanced sampling")
     parser.add_argument("--shared", type=str, default=None, help="Path to shared sample parquet")
@@ -255,7 +333,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     print("=" * 70)
-    print("HEALTHCARE DECISION SIMULATION")
+    print("HEALTHCARE DEBATE SIMULATION")
     print("=" * 70)
     
     # Test connection
@@ -266,10 +344,11 @@ if __name__ == "__main__":
     print("✓ Connected\n")
     
     # Run simulation
-    results = run_simulation(
+    results = run_debate_simulation(
         n_patients=args.n_patients,
         model_name=args.model,
-        temperature=args.temperature,
+        temp_a=args.temp_a,
+        temp_b=args.temp_b,
         random_seed=args.seed,
         balanced=args.balanced,
         shared_sample_path=args.shared,

@@ -1,0 +1,10 @@
+{
+  "n_patients": 100,
+  "model_name": "llama3.2:latest",
+  "temp_a": 0.5,
+  "temp_b": 0.9,
+  "temp_aggregator": 0.3,
+  "random_seed": 42,
+  "balanced": false,
+  "timestamp": "2026-02-24T00:18:55.406226"
+}
